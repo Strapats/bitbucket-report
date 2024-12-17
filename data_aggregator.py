@@ -22,8 +22,6 @@ class DataAggregator:
         """Collect all data from Bitbucket."""
         repositories = self.api.get_repositories()
         self.logger.info(f"Found {len(repositories)} repositories")
-        self.logger.debug(f"Repositories structure: {repositories}")
-        self.logger.debug(f"Type of repositories: {type(repositories)}")
     
         # First pass to count total commits for progress tracking
         self.logger.info("Counting total commits...")
@@ -56,10 +54,6 @@ class DataAggregator:
 
                 if year or self.year:
                     commits = [c for c in commits if datetime.fromisoformat(c['date'].replace('Z', '+00:00')).year == (year or self.year)]
-                
-                # Log first commit structure for debugging
-                if commits:
-                    self.logger.debug(f"First commit structure: {commits[0]}")
                 
                 # Get diffstats
                 diffstats = self.api.get_diffstats_batch(repo['slug'], commits)

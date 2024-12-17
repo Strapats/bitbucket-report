@@ -52,37 +52,26 @@ class BitbucketAPI:
 
     def _get_cache_key(self, url: str, params=None) -> str:
         """Generate a cache key from URL and params, ignoring None values."""
-        # Extract meaningful parts from URL (e.g., repo slug, commit hash)
-        url_parts = url.split('/')
+        # Get the base key from the URL
+        key_parts = [url.split('/')[-2], url.split('/')[-1]]
         
-        # For diffstats, we want repo_slug/diffstat/commit_hash
-        if 'diffstat' in url:
-            repo_slug = url_parts[-3]
-            commit_hash = url_parts[-1]
-            key_parts = ['diffstat', repo_slug, commit_hash]
-        # For commits, we want repo_slug/commits
-        elif 'commits' in url:
-            repo_slug = url_parts[-2]
-            key_parts = ['commits', repo_slug]
-        # For repositories, just use repositories
-        elif 'repositories' in url and len(url_parts) == 6:
-            key_parts = ['repositories']
-        else:
-            # Default to using last two non-empty parts
-            key_parts = [p for p in url_parts[-2:] if p]
-        
-        # Only include non-None params
+        # Add non-None params to the key
         if params:
-            param_str = '_'.join(f"{k}_{v}" for k, v in sorted(params.items()) if v is not None)
+            param_str = '_'.join(f"{k}={v}" for k, v in sorted(params.items()) if v is not None)
             if param_str:
                 key_parts.append(param_str)
         
-        return '_'.join(key_parts)
+        # Generate a unique hash for the full URL and params
+        full_key = '_'.join(key_parts)
+        hash_key = hashlib.md5(full_key.encode()).hexdigest()[:8]
+        
+        # Add date to the filename (YYYYMMDD)
+        date = datetime.now().strftime('%Y%m%d')
+        return f"{key_parts[0]}_{key_parts[1]}_{hash_key}_{date}"
 
-    def _get_cache_path(self, key):
+    def _get_cache_path(self, key: str) -> Path:
         """Generate a cache file path for a given key."""
-        hash_key = hashlib.md5(key.encode()).hexdigest()
-        return self.cache_dir / f"{key}_{hash_key}.json"
+        return self.cache_dir / f"{key}.json"
 
     def _list_cache_files(self):
         """List all cache files with their keys for debugging."""
@@ -90,21 +79,15 @@ class BitbucketAPI:
         for file in self.cache_dir.glob("*.json"):
             logger.info(f"  {file.name}")
 
-    def _cache_response(self, url, params, response_data, metadata=None):
-        """Cache response data for a URL with metadata."""
+    def _cache_response(self, url, params, response_data):
+        """Cache response data for a URL."""
         cache_key = self._get_cache_key(url, params)
         cache_path = self._get_cache_path(cache_key)
         
         try:
-            cache_data = {
-                'data': response_data,
-                'metadata': metadata or {},
-                'cached_at': datetime.now().isoformat(),
-                'url': url  # Store original URL for debugging
-            }
             with cache_path.open('w') as f:
-                json.dump(cache_data, f)
-            logger.debug(f"💾 Cached response for: {cache_key}")
+                json.dump(response_data, f)
+            logger.debug(f"💾 Cached data for: {url}")
         except Exception as e:
             logger.warning(f"Failed to write cache file {cache_path}: {e}")
 
@@ -116,30 +99,41 @@ class BitbucketAPI:
         if self._is_cache_valid(cache_path):
             try:
                 with cache_path.open('r') as f:
-                    cached_data = json.load(f)
-                    if isinstance(cached_data, dict) and 'data' in cached_data:
-                        data = cached_data['data']
-                    else:
-                        data = cached_data
+                    data = json.load(f)
+                    
+                    if validate_func:
+                        validation_error = validate_func(data)
+                        if validation_error:
+                            logger.warning(f"⚠ Cache data validation failed for {cache_path.name}: {validation_error}")
+                            return None
                         
-                    if validate_func and not validate_func(data, cached_data.get('metadata', {})):
-                        logger.warning(f"❌ Cache validation failed for {url}")
-                        return None
-                        
-                    logger.debug(f"🌐 Using cached data for: {url}")
+                    logger.debug(f"✅ Using cached data for: {cache_path.name}")
                     return data
             except Exception as e:
-                logger.warning(f"Failed to read cache file {cache_path}: {e}")
+                logger.error(f"❌ Failed to read cache file {cache_path.name}: {e}")
         return None
 
-    def _is_cache_valid(self, cache_path):
+    def _is_cache_valid(self, cache_path: Path) -> bool:
         """Check if cache file exists and is not expired."""
         if not cache_path.exists():
+            logger.debug(f"Cache file not found: {cache_path.name}")
             return False
-        
-        # Check file modification time
-        mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
-        return datetime.now() - mtime < self.cache_expiry
+            
+        try:
+            # Extract date from filename (format: name_hash_date.json)
+            cache_date_str = cache_path.stem.split('_')[-1]
+            cache_date = datetime.strptime(cache_date_str, '%Y%m%d')
+            
+            # Check if cache is expired (older than cache_expiry)
+            if datetime.now() - cache_date > self.cache_expiry:
+                logger.debug(f"Cache expired for {cache_path.name}")
+                return False
+                
+            logger.debug(f"Cache not expired {cache_path.name}")
+            return True
+        except (ValueError, IndexError) as e:
+            logger.error(f"❌ Invalid cache filename format: {cache_path.name}")
+            return False
 
     def clear_cache(self, older_than_days=None):
         """Clear all or expired cache files.
@@ -259,7 +253,21 @@ class BitbucketAPI:
             url = f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/diffstat/{commit_hash}"
             logger.debug(f"🌐 Fetching diffstat for commit {commit_hash[:8]} in {repo_slug}")
             response = self._make_request(url)
-            return response.json()
+            data = response.json()
+            
+            # Extract diffstat from response
+            if isinstance(data, dict) and 'values' in data:
+                diffstat = data['values']
+                if isinstance(diffstat, list) and len(diffstat) > 0:
+                    total_lines = {'lines_added': 0, 'lines_removed': 0}
+                    for stat in diffstat:
+                        total_lines['lines_added'] += stat.get('lines_added', 0)
+                        total_lines['lines_removed'] += stat.get('lines_removed', 0)
+                    return total_lines
+                
+            logger.warning(f"Unexpected diffstat response format for {commit_hash[:8]}")
+            return {'lines_added': 0, 'lines_removed': 0}
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"🌐 Error fetching diffstat for commit {commit_hash[:8]} in {repo_slug}: {str(e)}")
             raise
@@ -367,6 +375,16 @@ class BitbucketAPI:
             logger.error(f"🌐 Error fetching diffstat for commit {commit_hash[:8]} in {repo_slug}: {str(e)}")
             raise
 
+    def validate_diffstat(self, data):
+        """Validate diffstat data."""
+        logger.debug(f"Validating diffstat")
+        if not data:
+            return "Empty data"
+        data_str = str(data)
+        if not ('lines_added' in data_str or 'lines_removed' in data_str):
+            return "Missing required fields: lines_added or lines_removed"
+        return None  # No error
+
     def fetch_single_diffstat(self, commit):
         """Fetch diffstat for a single commit with caching."""
         # Get repository slug from commit data
@@ -384,12 +402,9 @@ class BitbucketAPI:
         cache_key = self._get_cache_key(f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/diffstat/{commit['hash']}")
         cache_path = self._get_cache_path(cache_key)
         
-        def validate_diffstat(data, metadata):
-            return data and isinstance(data, dict) and ('lines_added' in data or 'lines_removed' in data)
-        
         cached_data = self._get_cached_response(
             f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/diffstat/{commit['hash']}",
-            validate_func=validate_diffstat
+            validate_func=self.validate_diffstat
         )
         if cached_data:
             return {
@@ -407,8 +422,7 @@ class BitbucketAPI:
             self._cache_response(
                 f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/diffstat/{commit['hash']}", 
                 None, 
-                diffstat,
-                metadata={'commit_hash': commit['hash']}
+                diffstat
             )
                     
             return {
