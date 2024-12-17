@@ -12,17 +12,19 @@ import os
 import backoff
 from pathlib import Path
 import hashlib
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class BitbucketAPI:
-    def __init__(self, max_workers: int = 5, rate_limit_per_second: int = 1):
+    def __init__(self, max_workers: int = 5, rate_limit_per_second: float = 1.0):
         self.base_url = "https://api.bitbucket.org/2.0"
         self.session = requests.Session()
         self.max_workers = max_workers
         self.rate_limit = rate_limit_per_second
         self._last_request_time = 0
+        self._rate_limit_lock = threading.Lock()
         self.cache_dir = Path('cache')
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_expiry = timedelta(days=1)  # Cache expires after 1 day
@@ -116,17 +118,20 @@ class BitbucketAPI:
             logging.warning(f"Failed to write cache file {cache_path}: {e}")
 
     def _rate_limit_wait(self):
-        """Implement rate limiting."""
-        current_time = time.time()
-        time_since_last_request = current_time - self._last_request_time
-        if time_since_last_request < 1.0 / self.rate_limit:
-            time.sleep(1.0 / self.rate_limit - time_since_last_request)
-        self._last_request_time = time.time()
+        """Implement thread-safe rate limiting."""
+        with self._rate_limit_lock:
+            current_time = time.time()
+            time_since_last_request = current_time - self._last_request_time
+            if time_since_last_request < 1.0 / self.rate_limit:
+                sleep_time = (1.0 / self.rate_limit) - time_since_last_request
+                time.sleep(sleep_time)
+            self._last_request_time = time.time()
 
     @backoff.on_exception(
         backoff.expo,
         requests.exceptions.RequestException,
         max_tries=5,
+        max_time=300,
         giveup=lambda e: e.response is not None and e.response.status_code not in [429, 500, 502, 503, 504]
     )
     def _make_request(self, url: str, params: Optional[Dict] = None) -> requests.Response:
@@ -135,8 +140,12 @@ class BitbucketAPI:
         response = self.session.get(url, params=params)
         if response.status_code == 429:
             retry_after = int(response.headers.get('Retry-After', 30))
-            logger.warning(f"Rate limit hit, waiting {retry_after} seconds")
-            time.sleep(retry_after)
+            with self._rate_limit_lock:
+                logger.warning(f"Rate limit hit, waiting {retry_after} seconds")
+                time.sleep(retry_after)
+                # Adjust rate limit based on response
+                self.rate_limit = max(0.5, self.rate_limit * 0.8)  # Reduce rate limit by 20%
+                logger.info(f"Adjusted rate limit to {self.rate_limit} requests/second")
             return self._make_request(url, params)
         response.raise_for_status()
         return response
@@ -270,8 +279,6 @@ class BitbucketAPI:
 
     def get_diffstats_batch(self, repo_slug: str, commits: List[Dict]) -> List[Dict]:
         """Get diffstats for multiple commits in parallel with retries and caching."""
-        logger.info(f"Fetching diffstats for {len(commits)} commits in {repo_slug}")
-        results = []
         
         def fetch_single_diffstat(commit):
             cache_key = f"diffstat_{repo_slug}_{commit['hash']}"
@@ -289,34 +296,47 @@ class BitbucketAPI:
                     
             try:
                 diffstat = self._get_diffstat_cached(repo_slug, commit['hash'])
-                self._cache_response(f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/diffstat/{commit['hash']}", None, diffstat)
+                try:
+                    with cache_path.open('w') as f:
+                        json.dump(diffstat, f)
+                    logger.debug(f"Cached diffstat for commit {commit['hash']}")
+                except Exception as e:
+                    logger.warning(f"Failed to write cache file {cache_path}: {e}")
+                    
                 return {
                     'commit_hash': commit['hash'],
                     'diffstat': diffstat,
                     'success': True
                 }
             except Exception as e:
-                logger.error(f"Error fetching diffstat for {commit['hash'][:8]}: {str(e)}")
+                logger.error(f"Error fetching diffstat for commit {commit['hash']}: {str(e)}")
                 return {
                     'commit_hash': commit['hash'],
-                    'diffstat': {'lines_added': 0, 'lines_removed': 0},
-                    'success': False
+                    'diffstat': None,
+                    'success': False,
+                    'error': str(e)
                 }
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_commit = {
-                executor.submit(fetch_single_diffstat, commit): commit 
-                for commit in commits
-            }
+        results = []
+        total_commits = len(commits)
+        processed = 0
+        chunk_size = 20  # Process in smaller chunks to avoid overwhelming the API
+        
+        for i in range(0, total_commits, chunk_size):
+            chunk = commits[i:i + chunk_size]
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [executor.submit(fetch_single_diffstat, commit) for commit in chunk]
+                for future in as_completed(futures):
+                    result = future.result()
+                    results.append(result)
+                    processed += 1
+                    if processed % 10 == 0:  # Log progress every 10 commits
+                        logger.info(f"Processed {processed}/{total_commits} diffstats")
             
-            completed = 0
-            for future in as_completed(future_to_commit):
-                completed += 1
-                if completed % 10 == 0:
-                    logger.info(f"Progress: {completed}/{len(commits)} diffstats retrieved")
-                results.append(future.result())
-
-        logger.info(f"Completed fetching diffstats for {repo_slug}")
+            # Add a small delay between chunks to help prevent rate limiting
+            if i + chunk_size < total_commits:
+                time.sleep(2)
+        
         return results
 
     def get_pull_requests(self, repo_slug: str, year: int) -> List[Dict]:

@@ -14,12 +14,25 @@ class DataAggregator:
         self.commits_data = []
         self.pr_data = []
         self.file_changes_data = []
+        self.total_commits = 0
+        self.processed_commits = 0
 
     def collect_data(self):
         """Collect data from Bitbucket API."""
         try:
             repositories = self.api.get_repositories()
-            logger.info(f"Processing {len(repositories)} repositories...")
+            logger.info(f"Found {len(repositories)} repositories")
+
+            # First pass to count total commits for progress tracking
+            logger.info("Counting total commits...")
+            for repo in repositories:
+                commits = self.api.get_commits(repo['slug'])
+                year_commits = [
+                    commit for commit in commits 
+                    if datetime.strptime(commit['date'][:10], '%Y-%m-%d').year == self.year
+                ]
+                self.total_commits += len(year_commits)
+            logger.info(f"Total commits to process: {self.total_commits}")
 
             for repo in repositories:
                 repo_slug = repo['slug']
@@ -54,6 +67,8 @@ class DataAggregator:
                                 'lines_removed': diffstat_result['diffstat'].get('lines_removed', 0)
                             })
                         
+                        self.processed_commits += len(year_commits)
+                        logger.info(f"Overall progress: {self.processed_commits}/{self.total_commits} commits processed ({(self.processed_commits/self.total_commits*100):.1f}%)")
                         logger.info(f"Completed processing {repo_slug}: {len(year_commits)} commits analyzed")
                     else:
                         logger.info(f"No commits found for {repo_slug} in {self.year}")
