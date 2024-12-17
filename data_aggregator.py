@@ -5,117 +5,110 @@ from typing import Dict, List
 from bitbucket_api import BitbucketAPI
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class DataAggregator:
-    def __init__(self, api: BitbucketAPI, year: int):
+    """Class to aggregate data from Bitbucket API."""
+
+    def __init__(self, api: BitbucketAPI, year: int = None):
+        """Initialize with API client and optional year filter."""
         self.api = api
         self.year = year
-        self.commits_data = []
-        self.pr_data = []
-        self.file_changes_data = []
         self.total_commits = 0
         self.processed_commits = 0
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
 
-    def collect_data(self):
-        """Collect data from Bitbucket API."""
-        try:
-            repositories = self.api.get_repositories()
-            logger.info(f"Found {len(repositories)} repositories")
-
-            # First pass to count total commits for progress tracking
-            logger.info("Counting total commits...")
-            for repo in repositories:
+    def collect_data(self, year: int = None) -> Dict[str, pd.DataFrame]:
+        """Collect all data from Bitbucket."""
+        repositories = self.api.get_repositories()
+        self.logger.info(f"Found {len(repositories)} repositories")
+        self.logger.debug(f"Repositories structure: {repositories}")
+        self.logger.debug(f"Type of repositories: {type(repositories)}")
+    
+        # First pass to count total commits for progress tracking
+        self.logger.info("Counting total commits...")
+        for repo in repositories:
+            try:
+                self.logger.debug(f"Processing repository: {repo['slug']}")
                 commits = self.api.get_commits(repo['slug'])
-                year_commits = [
-                    commit for commit in commits 
-                    if datetime.strptime(commit['date'][:10], '%Y-%m-%d').year == self.year
-                ]
-                self.total_commits += len(year_commits)
-            logger.info(f"Total commits to process: {self.total_commits}")
-
-            for repo in repositories:
-                repo_slug = repo['slug']
-                logger.info(f"\nStarting data collection for repository: {repo_slug}")
                 
-                try:
-                    # Get all commits
-                    commits = self.api.get_commits(repo_slug)
-                    
-                    # Filter commits for the specified year
-                    year_commits = [
-                        commit for commit in commits 
-                        if datetime.strptime(commit['date'][:10], '%Y-%m-%d').year == self.year
-                    ]
-                    
-                    logger.info(f"Processing {len(year_commits)} commits from {self.year} for {repo_slug}")
-                    
-                    # Process commits in parallel batches
-                    if year_commits:
-                        diffstats = self.api.get_diffstats_batch(repo_slug, year_commits)
-                        
-                        # Process results
-                        for commit, diffstat_result in zip(year_commits, diffstats):
-                            commit_date = datetime.strptime(commit['date'][:10], '%Y-%m-%d')
-                            self.commits_data.append({
-                                'repository': repo_slug,
-                                'commit_hash': commit['hash'],
-                                'author': commit['author']['raw'] if commit.get('author') else 'Unknown',
-                                'date': commit_date,
-                                'month': commit_date.strftime('%Y-%m'),
-                                'lines_added': diffstat_result['diffstat'].get('lines_added', 0),
-                                'lines_removed': diffstat_result['diffstat'].get('lines_removed', 0)
-                            })
-                        
-                        self.processed_commits += len(year_commits)
-                        logger.info(f"Overall progress: {self.processed_commits}/{self.total_commits} commits processed ({(self.processed_commits/self.total_commits*100):.1f}%)")
-                        logger.info(f"Completed processing {repo_slug}: {len(year_commits)} commits analyzed")
-                    else:
-                        logger.info(f"No commits found for {repo_slug} in {self.year}")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing repository {repo_slug}: {str(e)}")
+                if year or self.year:
+                    commits = [c for c in commits if datetime.fromisoformat(c['date'].replace('Z', '+00:00')).year == (year or self.year)]
+                self.total_commits += len(commits)
+            except Exception as e:
+                self.logger.error(f"Error processing commits for {repo['slug']}: {str(e)}", exc_info=True)
+                continue
+        self.logger.info(f"Total commits to process: {self.total_commits}")
+
+        # Process repositories and collect data
+        all_commits_data = []
+        all_diffstats_data = []
+        
+        for i, repo in enumerate(repositories, 1):
+            self.logger.info(f"Processing repository {i}/{len(repositories)}: {repo['slug']}")
+            
+            try:
+                # Get commits
+                commits = self.api.get_commits(repo['slug'])
+                if not commits:
+                    self.logger.warning(f"No commits found for repository {repo['slug']}")
                     continue
 
-        except Exception as e:
-            logger.error(f"Error in data collection: {str(e)}")
-            raise
-
-    def aggregate_data(self) -> Dict[str, pd.DataFrame]:
-        """Aggregate collected data into DataFrames."""
-        if not self.commits_data:
-            logger.warning("No commit data collected to aggregate")
-            return {}
+                if year or self.year:
+                    commits = [c for c in commits if datetime.fromisoformat(c['date'].replace('Z', '+00:00')).year == (year or self.year)]
+                
+                # Log first commit structure for debugging
+                if commits:
+                    self.logger.debug(f"First commit structure: {commits[0]}")
+                
+                # Get diffstats
+                diffstats = self.api.get_diffstats_batch(repo['slug'], commits)
+                
+                # Process commits
+                for commit in commits:
+                    try:
+                        commit_date = datetime.fromisoformat(commit['date'].replace('Z', '+00:00'))
+                        author = commit.get('author', {})
+                        author_raw = author.get('raw') if isinstance(author, dict) else str(author)
+                        
+                        commit_data = {
+                            'repository': repo['slug'],
+                            'commit_hash': commit['hash'],
+                            'author': author_raw,
+                            'date': commit_date,
+                            'month': commit_date.strftime('%Y-%m'),
+                            'message': commit.get('message', '')
+                        }
+                        all_commits_data.append(commit_data)
+                    except Exception as e:
+                        self.logger.error(f"Error processing commit {commit.get('hash', 'unknown')}: {str(e)}")
+                        self.logger.debug(f"Problematic commit data: {commit}")
+                        continue
+                
+                # Process diffstats
+                for stat in diffstats:
+                    if stat['success'] and stat['diffstat']:
+                        all_diffstats_data.append({
+                            'repository': repo['slug'],
+                            'commit_hash': stat['commit_hash'],
+                            'lines_added': stat['diffstat'].get('lines_added', 0),
+                            'lines_removed': stat['diffstat'].get('lines_removed', 0)
+                        })
+                
+                self.processed_commits += len(commits)
+                self.logger.info(f"Overall progress: {self.processed_commits}/{self.total_commits} commits processed ({(self.processed_commits/self.total_commits*100):.1f}%)")
+                
+            except Exception as e:
+                self.logger.error(f"Error processing repository {repo['slug']}: {str(e)}")
+                continue
 
         # Convert to DataFrames
-        commits_df = pd.DataFrame(self.commits_data)
+        commits_df = pd.DataFrame(all_commits_data)
+        diffstats_df = pd.DataFrame(all_diffstats_data)
         
-        # Aggregate commits by repository and month
-        monthly_commits = commits_df.groupby(['repository', 'month']).agg({
-            'commit_hash': 'count',
-            'lines_added': 'sum',
-            'lines_removed': 'sum'
-        }).reset_index()
-        
-        monthly_commits = monthly_commits.rename(columns={'commit_hash': 'commits'})
-        
-        # Aggregate by author
-        author_stats = commits_df.groupby('author').agg({
-            'commit_hash': 'count',
-            'lines_added': 'sum',
-            'lines_removed': 'sum'
-        }).reset_index()
-        
-        author_stats = author_stats.rename(columns={'commit_hash': 'commits'})
+        self.logger.info(f"Collected data for {len(commits_df)} commits and {len(diffstats_df)} diffstats")
         
         return {
-            'monthly_commits': monthly_commits,
-            'author_stats': author_stats
+            'commits': commits_df,
+            'diffstats': diffstats_df
         }
-
-    def export_csv(self, data: Dict[str, pd.DataFrame], output_folder: str):
-        """Export aggregated data to CSV files."""
-        for name, df in data.items():
-            filepath = f"{output_folder}/{name}_data.csv"
-            df.to_csv(filepath, index=False)
-            logger.info(f"Exported {name} data to {filepath}")

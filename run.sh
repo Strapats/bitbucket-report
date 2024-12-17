@@ -46,6 +46,48 @@ check_env_values() {
     return $missing
 }
 
+# Help message
+show_help() {
+    echo "Usage: ./run.sh [options]"
+    echo "Options:"
+    echo "  -h, --help                Show this help message"
+    echo "  -y, --year YEAR           Specify the year for data collection (default: current year)"
+    echo "  -v, --visualize-only      Only generate visualizations from existing CSV files"
+    echo "  -o, --output-dir DIR      Specify custom output directory (default: output)"
+}
+
+# Default values
+YEAR=$(date +%Y)
+VISUALIZE_ONLY=false
+OUTPUT_DIR="output"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -y|--year)
+            YEAR="$2"
+            shift 2
+            ;;
+        -v|--visualize-only)
+            VISUALIZE_ONLY=true
+            shift
+            ;;
+        -o|--output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
 # Check for Python 3
 if ! command_exists python3; then
     echo "Python 3 is required but not installed. Please install Python 3 and try again."
@@ -67,10 +109,13 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     
     # Install required system dependencies
     echo "Installing system dependencies..."
-    brew install pango libffi cairo gobject-introspection
+    brew list pango || brew install pango
+    brew list libffi || brew install libffi
+    brew list cairo || brew install cairo
+    brew list gobject-introspection || brew install gobject-introspection
 fi
 
-# Create and activate virtual environment if it doesn't exist
+# Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv venv
@@ -97,6 +142,14 @@ if [ $? -eq 1 ]; then
     exit 1
 fi
 
-# Run the application
-echo "Starting the application..."
-python main.py
+# Run the script with parameters
+if [ "$VISUALIZE_ONLY" = true ]; then
+    echo "Generating visualizations from existing CSV files in $OUTPUT_DIR..."
+    python main.py --visualize-only --output-dir "$OUTPUT_DIR"
+else
+    echo "Collecting data and generating visualizations for year $YEAR..."
+    python main.py --year "$YEAR" --output-dir "$OUTPUT_DIR"
+fi
+
+# Deactivate virtual environment
+deactivate
