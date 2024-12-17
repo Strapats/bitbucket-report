@@ -336,7 +336,7 @@ class BitbucketAPI:
                     processed += 1
                     if processed % 10 == 0:  # Log progress every 10 commits
                         cache_hits = sum(1 for r in results if r.get('from_cache', False))
-                        logger.info(f"🌐 Processed {processed}/{total_commits} diffstats ({cache_hits} from cache)")
+                        logger.info(f"Processed {processed}/{total_commits} diffstats (💾 {cache_hits} from cache)")
             
             # Add a small delay between chunks to help prevent rate limiting
             if i + chunk_size < total_commits:
