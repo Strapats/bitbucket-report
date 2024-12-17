@@ -134,7 +134,7 @@ class BitbucketAPI:
         self._rate_limit_wait()
         response = self.session.get(url, params=params)
         if response.status_code == 429:
-            retry_after = int(response.headers.get('Retry-After', 60))
+            retry_after = int(response.headers.get('Retry-After', 30))
             logger.warning(f"Rate limit hit, waiting {retry_after} seconds")
             time.sleep(retry_after)
             return self._make_request(url, params)
