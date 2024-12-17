@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Dict
 import os
 import logging
+import seaborn as sns
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,7 +12,11 @@ class Visualizer:
     def __init__(self, data: Dict[str, pd.DataFrame], output_folder: str):
         self.data = data
         self.output_folder = output_folder
-        plt.style.use('seaborn')
+        os.makedirs(output_folder, exist_ok=True)
+        
+        # Set up seaborn style
+        sns.set_style("whitegrid")
+        sns.set_palette("husl")
 
     def create_monthly_activity_chart(self):
         """Create line chart showing commits, PRs, and file changes over months."""
@@ -19,19 +24,19 @@ class Visualizer:
         
         # Plot commits
         commits_by_month = self.data['commits'].groupby('month')['commits'].sum()
-        plt.plot(commits_by_month.index, commits_by_month.values, 
+        sns.lineplot(x=commits_by_month.index, y=commits_by_month.values, 
                 marker='o', label='Commits')
 
         # Plot PRs
         prs_by_month = self.data['pull_requests'].groupby('month')['count'].sum()
-        plt.plot(prs_by_month.index, prs_by_month.values, 
+        sns.lineplot(x=prs_by_month.index, y=prs_by_month.values, 
                 marker='s', label='Pull Requests')
 
         # Plot file changes
         changes = self.data['file_changes']
         total_changes = changes.groupby('month')['lines_added'].sum() + \
                        changes.groupby('month')['lines_removed'].sum()
-        plt.plot(total_changes.index, total_changes.values, 
+        sns.lineplot(x=total_changes.index, y=total_changes.values, 
                 marker='^', label='File Changes')
 
         plt.title('Monthly Development Activity')
@@ -51,7 +56,7 @@ class Visualizer:
         commits_by_repo = commits_by_repo.sort_values(ascending=False).head(10)
 
         plt.figure(figsize=(12, 6))
-        commits_by_repo.plot(kind='bar')
+        sns.barplot(x=commits_by_repo.index, y=commits_by_repo.values)
         plt.title('Top 10 Repositories by Commit Count')
         plt.xlabel('Repository')
         plt.ylabel('Number of Commits')
@@ -71,11 +76,12 @@ class Visualizer:
         })
 
         plt.figure(figsize=(12, 6))
-        monthly_changes.plot(kind='bar', stacked=True)
+        sns.barplot(x=monthly_changes.index, y=monthly_changes['lines_added'], label='Lines Added')
+        sns.barplot(x=monthly_changes.index, y=monthly_changes['lines_removed'], bottom=monthly_changes['lines_added'], label='Lines Removed')
         plt.title('File Changes by Month')
         plt.xlabel('Month')
         plt.ylabel('Number of Lines')
-        plt.legend(['Lines Added', 'Lines Removed'])
+        plt.legend()
         plt.xticks(rotation=45)
         plt.tight_layout()
         

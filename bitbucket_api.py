@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import config
 from typing import Dict, List, Optional, Generator
 import logging
@@ -155,22 +155,41 @@ class BitbucketAPI:
             raise requests.exceptions.HTTPError(error_msg, response=response)
         response.raise_for_status()
 
-    def _paginated_get(self, url: str, params: Optional[Dict] = None) -> Generator:
+    def _paginated_get(self, url: str, params: Dict = None) -> Generator:
         """Handle paginated API responses."""
+        cache_key = f"paginated_{url}_{str(params)}"
+        cache_path = self._get_cache_path(cache_key)
+        
+        # Try to get complete paginated data from cache
+        if self._is_cache_valid(cache_path):
+            try:
+                with cache_path.open('r') as f:
+                    logger.debug(f"Using cached paginated data for: {url}")
+                    return (item for item in json.load(f))
+            except Exception as e:
+                logger.warning(f"Failed to read cache file {cache_path}: {e}")
+
+        # If not in cache, fetch and store all pages
         logger.info(f"Making request to: {url}")
+        all_items = []
+        
         while url:
-            cached_response = self._get_cached_response(url, params)
-            if cached_response:
-                yield from cached_response.get('values', [])
-                url = cached_response.get('next')
-            else:
-                response = self._make_request(url, params=params)
-                if not response.ok:
-                    self._handle_auth_error(response)
-                data = response.json()
-                self._cache_response(url, params, data)
-                yield from data.get('values', [])
-                url = data.get('next')
+            response = self._make_request(url, params=params)
+            if not response.ok:
+                self._handle_auth_error(response)
+            data = response.json()
+            all_items.extend(data.get('values', []))
+            url = data.get('next')
+
+        # Cache the complete list
+        try:
+            with cache_path.open('w') as f:
+                json.dump(all_items, f)
+            logger.debug(f"Cached paginated data for: {url}")
+        except Exception as e:
+            logger.warning(f"Failed to write cache file {cache_path}: {e}")
+
+        return (item for item in all_items)
 
     @lru_cache(maxsize=1000)
     def _get_diffstat_cached(self, repo_slug: str, commit_hash: str) -> Dict:
@@ -191,6 +210,7 @@ class BitbucketAPI:
         """Get all repositories for the workspace."""
         cache_key = f"repositories_{config.BITBUCKET_WORKSPACE}"
         cache_path = self._get_cache_path(cache_key)
+        
         if self._is_cache_valid(cache_path):
             try:
                 with cache_path.open('r') as f:
@@ -198,20 +218,29 @@ class BitbucketAPI:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to read cache file {cache_path}: {e}")
-                
+
         try:
             url = f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}"
             repositories = list(self._paginated_get(url))
-            self._cache_response(url, None, repositories)
+            
+            # Cache the full repository list
+            try:
+                with cache_path.open('w') as f:
+                    json.dump(repositories, f)
+                logger.info("Cached repository data")
+            except Exception as e:
+                logger.warning(f"Failed to write cache file {cache_path}: {e}")
+                
             return repositories
         except Exception as e:
             logger.error(f"Error fetching repositories: {str(e)}")
-            raise
+            return []
 
     def get_commits(self, repo_slug: str) -> List[Dict]:
         """Get all commits for a repository."""
         cache_key = f"commits_{repo_slug}"
         cache_path = self._get_cache_path(cache_key)
+        
         if self._is_cache_valid(cache_path):
             try:
                 with cache_path.open('r') as f:
@@ -219,17 +248,25 @@ class BitbucketAPI:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to read cache file {cache_path}: {e}")
-                
+
         try:
             url = f"{self.base_url}/repositories/{config.BITBUCKET_WORKSPACE}/{repo_slug}/commits"
             logger.info(f"Fetching commits for repository: {repo_slug}")
             commits = list(self._paginated_get(url))
             logger.info(f"Retrieved {len(commits)} commits from {repo_slug}")
-            self._cache_response(url, None, commits)
+            
+            # Cache the full commit list
+            try:
+                with cache_path.open('w') as f:
+                    json.dump(commits, f)
+                logger.info(f"Cached commit data for {repo_slug}")
+            except Exception as e:
+                logger.warning(f"Failed to write cache file {cache_path}: {e}")
+                
             return commits
         except Exception as e:
             logger.error(f"Error fetching commits for {repo_slug}: {str(e)}")
-            raise
+            return []
 
     def get_diffstats_batch(self, repo_slug: str, commits: List[Dict]) -> List[Dict]:
         """Get diffstats for multiple commits in parallel with retries and caching."""
