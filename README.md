@@ -1,100 +1,82 @@
-# Bitbucket Year-End Report Generator
+# Bitbucket Statistics
 
-This project generates a comprehensive year-end report of development activity across all repositories in a Bitbucket Cloud workspace. The report includes statistics and visualizations for commits, pull requests, and file changes.
+A tool to collect and visualize statistics from your Bitbucket repositories, including commit activity, code changes, and author contributions.
 
 ## Features
 
-- Fetches data from Bitbucket Cloud API:
-  - Repository information
-  - Commits
-  - Pull requests
-  - File changes (lines added/removed)
-- Generates visualizations:
-  - Monthly activity trends
-  - Repository contributions
-  - File changes summary
-  - Contribution distribution
-- Exports data in multiple formats:
-  - CSV files for raw data
-  - HTML report with interactive visualizations
-  - PDF report for easy sharing
+- Collects repository statistics from Bitbucket Cloud
+- Tracks commit activity over time
+- Analyzes code changes (lines added/removed)
+- Generates author contribution statistics
+- Caches API responses for faster subsequent runs
+- Handles rate limiting and retries automatically
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.x
 - Bitbucket Cloud account with API access
-- App password with repository read permissions
+- macOS (for automatic dependency installation)
 
 ## Installation
 
 1. Clone the repository:
 ```bash
 git clone [repository-url]
-cd [repository-name]
+cd bitbucket-statistics
 ```
 
-2. Install required packages:
+2. Run the setup script:
 ```bash
-pip install -r requirements.txt
+chmod +x run.sh
+./run.sh
 ```
 
-3. Create a `.env` file in the project root with your Bitbucket credentials:
-```env
-BITBUCKET_WORKSPACE=your_workspace
-BITBUCKET_USERNAME=your_username
-BITBUCKET_APP_PASSWORD=your_app_password
+The script will:
+- Install system dependencies (using Homebrew on macOS)
+- Create a Python virtual environment
+- Install required Python packages
+- Create a template `.env` file if it doesn't exist
+
+3. Configure your Bitbucket credentials:
+Edit the `.env` file and fill in your Bitbucket details:
 ```
+BITBUCKET_WORKSPACE=your-workspace-here
+BITBUCKET_USERNAME=your-username-here
+BITBUCKET_APP_PASSWORD=your-app-password-here
+```
+
+To create an app password:
+1. Go to Bitbucket Settings → App passwords
+2. Create a new app password with the following permissions:
+   - Repositories: Read
+   - Pull requests: Read
 
 ## Usage
 
 Run the script:
 ```bash
-python main.py
+./run.sh
 ```
 
 The script will:
-1. Fetch all repository data from your Bitbucket workspace
-2. Process and aggregate the data
-3. Generate visualizations
-4. Create HTML and PDF reports
-5. Save all output files to the `output` directory
+1. Collect statistics from all repositories in your workspace
+2. Generate CSV reports in the `output` directory
+3. Create visualizations of the data
 
-## Output Files
+Data is cached in the `cache` directory to speed up subsequent runs.
 
-The script generates the following files in the `output` directory:
+## Output
 
-- `commits_data.csv`: Monthly commit statistics per repository
-- `pull_requests_data.csv`: Pull request data
-- `file_changes_data.csv`: Lines added/removed statistics
-- `monthly_activity.png`: Line chart of monthly activity
-- `repository_contributions.png`: Bar chart of top repositories
-- `file_changes.png`: Stacked bar chart of file changes
-- `contribution_distribution.png`: Pie chart of repository contributions
-- `report.html`: Complete HTML report with all visualizations
-- `report.pdf`: PDF version of the report
+The tool generates several files in the `output` directory:
+- `monthly_commits_data.csv`: Commit activity by repository and month
+- `author_stats_data.csv`: Contribution statistics by author
 
-## Configuration
+## Troubleshooting
 
-You can modify the following settings in `config.py`:
-- Report year (defaults to current year)
-- Output folder location
-- API endpoints and parameters
-
-## Error Handling
-
-The script includes comprehensive error handling and logging:
-- Validates required environment variables
-- Handles API rate limits and errors
-- Logs all operations with appropriate detail levels
-- Provides clear error messages for troubleshooting
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
+If you encounter rate limiting (429 errors), the tool will automatically:
+1. Respect the rate limits
+2. Wait for the specified retry period
+3. Resume data collection where it left off
 
 ## License
 
