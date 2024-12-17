@@ -2,13 +2,21 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from .env file
+load_dotenv(override=True)
 
 # Bitbucket API Configuration
 BITBUCKET_WORKSPACE = os.getenv('BITBUCKET_WORKSPACE')
 BITBUCKET_USERNAME = os.getenv('BITBUCKET_USERNAME')
 BITBUCKET_APP_PASSWORD = os.getenv('BITBUCKET_APP_PASSWORD')
+
+if not all([BITBUCKET_WORKSPACE, BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD]):
+    raise ValueError(
+        "Missing required environment variables. Please check your .env file contains:\n"
+        "BITBUCKET_WORKSPACE\n"
+        "BITBUCKET_USERNAME\n"
+        "BITBUCKET_APP_PASSWORD"
+    )
 
 # API Base URL
 BITBUCKET_API_BASE_URL = 'https://api.bitbucket.org/2.0'
